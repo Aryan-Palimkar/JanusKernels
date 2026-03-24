@@ -4,6 +4,8 @@
 #include <vector>
 #include <random>
 #include <cstdlib>
+#include <limits>
+#include <string>
 
 #include "attention.cu"
 
@@ -16,16 +18,12 @@ inline void checkCuda(cudaError_t err, const char* msg) {
   }
 }
 
-float run_bench(int bs, int num_heads, int len_q, int len_kv, int iters, int warmup) {
-  constexpr int BLOCK_Q = 64;
-  constexpr int BLOCK_KV = 64;
+template<int BLOCK_Q, int BLOCK_KV, int NUM_WARPS>
+float run_bench_cfg(int bs, int num_heads, int len_q, int len_kv, int iters, int warmup) {
   constexpr int DIM = 64;
-  constexpr int NUM_WARPS = 4;
 
   if (len_q % BLOCK_Q != 0 || len_kv % BLOCK_KV != 0) {
-    std::cerr << "len_q must be multiple of " << BLOCK_Q
-              << " and len_kv must be multiple of " << BLOCK_KV << std::endl;
-    std::exit(1);
+    return -1.0f;
   }
 
   const size_t q_elems = static_cast<size_t>(bs) * num_heads * len_q * DIM;
@@ -61,6 +59,10 @@ float run_bench(int bs, int num_heads, int len_q, int len_kv, int iters, int war
       flash_attn_forward<BLOCK_Q, BLOCK_KV, DIM, NUM_WARPS>,
       cudaFuncAttributeMaxDynamicSharedMemorySize,
       smem_bytes), "set max dynamic shared memory size");
+    checkCuda(cudaFuncSetAttribute(
+      flash_attn_forward<BLOCK_Q, BLOCK_KV, DIM, NUM_WARPS>,
+      cudaFuncAttributePreferredSharedMemoryCarveout,
+      100), "set shared memory carveout");
 
   for (int i = 0; i < warmup; ++i) {
     flash_attn_forward<BLOCK_Q, BLOCK_KV, DIM, NUM_WARPS><<<grid, block, smem_bytes>>>(
@@ -104,6 +106,13 @@ float run_bench(int bs, int num_heads, int len_q, int len_kv, int iters, int war
   return total_ms / static_cast<float>(iters);
 }
 
+struct Result {
+  std::string name;
+  float avg_ms = 0.0f;
+  double tflops = -1.0;
+  bool ran = false;
+};
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -122,11 +131,34 @@ int main(int argc, char** argv) {
   if (argc > 6) warmup = std::atoi(argv[6]);
 
   constexpr int DIM = 64;
-
-  const float avg_ms = run_bench(bs, num_heads, len_q, len_kv, iters, warmup);
-
   const double flops = 4.0 * static_cast<double>(bs) * num_heads * len_q * len_kv * DIM;
-  const double tflops = flops / (static_cast<double>(avg_ms) * 1.0e-3) / 1.0e12;
+
+  std::vector<Result> results;
+  results.reserve(3);
+
+  auto run_and_record = [&](const char* name, float avg_ms) {
+    Result r;
+    r.name = name;
+    r.avg_ms = avg_ms;
+    r.ran = avg_ms > 0.0f;
+    if (r.ran) {
+      r.tflops = flops / (static_cast<double>(avg_ms) * 1.0e-3) / 1.0e12;
+    }
+    results.push_back(r);
+  };
+
+  run_and_record("BQ64_BKV32_W4", run_bench_cfg<64, 32, 4>(bs, num_heads, len_q, len_kv, iters, warmup));
+
+  double best_tflops = -1.0;
+  float best_ms = 0.0f;
+  std::string best_name;
+  for (const auto& r : results) {
+    if (r.ran && r.tflops > best_tflops) {
+      best_tflops = r.tflops;
+      best_ms = r.avg_ms;
+      best_name = r.name;
+    }
+  }
 
   std::cout << "FlashAttention forward benchmark" << std::endl;
   std::cout << "Config: bs=" << bs
@@ -134,8 +166,17 @@ int main(int argc, char** argv) {
             << ", len_q=" << len_q
             << ", len_kv=" << len_kv
             << ", dim=" << DIM << std::endl;
-  std::cout << "Average kernel time: " << avg_ms << " ms" << std::endl;
-  std::cout << "Throughput: " << tflops << " TFLOPS" << std::endl;
+  std::cout << "Candidate results:" << std::endl;
+  for (const auto& r : results) {
+    if (r.ran) {
+      std::cout << "  " << r.name << ": " << r.avg_ms << " ms, " << r.tflops << " TFLOPS" << std::endl;
+    } else {
+      std::cout << "  " << r.name << ": skipped (shape incompatibility)" << std::endl;
+    }
+  }
+  std::cout << "Best kernel: " << best_name << std::endl;
+  std::cout << "Average kernel time: " << best_ms << " ms" << std::endl;
+  std::cout << "Throughput: " << best_tflops << " TFLOPS" << std::endl;
 
   return 0;
 }
