@@ -55,7 +55,12 @@ float run_bench(int bs, int num_heads, int len_q, int len_kv, int iters, int war
 
   dim3 block(NUM_WARPS * WARP_SIZE);
   dim3 grid(cdiv(len_q, BLOCK_Q), num_heads, bs);
-  const size_t smem_bytes = static_cast<size_t>(BLOCK_Q + 2 * BLOCK_KV) * DIM * sizeof(half);
+  const size_t smem_bytes = static_cast<size_t>(BLOCK_Q + 4 * BLOCK_KV) * DIM * sizeof(half);
+
+  checkCuda(cudaFuncSetAttribute(
+      flash_attn_forward<BLOCK_Q, BLOCK_KV, DIM, NUM_WARPS>,
+      cudaFuncAttributeMaxDynamicSharedMemorySize,
+      smem_bytes), "set max dynamic shared memory size");
 
   for (int i = 0; i < warmup; ++i) {
     flash_attn_forward<BLOCK_Q, BLOCK_KV, DIM, NUM_WARPS><<<grid, block, smem_bytes>>>(
@@ -105,7 +110,7 @@ int main(int argc, char** argv) {
   int bs = 1;
   int num_heads = 8;
   int len_q = 4096;
-  int len_kv = 8192;
+  int len_kv = 4096;
   int iters = 5;
   int warmup = 3;
 

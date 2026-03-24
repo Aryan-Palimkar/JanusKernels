@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 import argparse
 
-def benchmark_sdpa(bs=1, num_heads=16, seq_len=1024, dim=128, iters=100, warmup=20):
+def benchmark_sdpa(bs=1, num_heads=8, seq_len=4096, dim=64, iters=10, warmup=5):
     device = 'cuda'
     dtype = torch.float16
 

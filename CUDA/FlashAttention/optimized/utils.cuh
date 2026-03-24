@@ -25,7 +25,6 @@ __device__ __forceinline__ uint32_t swizzle(uint32_t offset_bytes){
   constexpr uint32_t CHUNKS_PER_ROW = STRIDE / 16;
   if constexpr (CHUNKS_PER_ROW <= 1) return offset_bytes;
 
-  // 8-row swizzle group; XOR is expressed in 16-byte chunk units.
   const uint32_t row_idx = (offset_bytes / STRIDE) & 0b111;
   const uint32_t xor_chunks = row_idx % CHUNKS_PER_ROW;
   return offset_bytes ^ (xor_chunks << 4);
@@ -47,11 +46,9 @@ __device__ __forceinline__ void tileMemcpy(uint32_t dst, const half* src, const 
   for(unsigned int i = 0; i < NUM_ITERS; i++){
     const unsigned int row = i * ROWS_PER_ITER + thread_row;
 
-    // Shared-memory destination byte address with tile-local swizzle.
     const uint32_t tile_off = (row * TILE_COLS + thread_col * 8) * sizeof(half);
     const uint32_t dst_addr = dst + swizzle<TILE_COLS * sizeof(half)>(tile_off);
 
-    //global memory address
     const half* src_addr = src + row * src_stride + thread_col * 8;
 
     asm volatile(
